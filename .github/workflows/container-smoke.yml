@@ -1,0 +1,53 @@
+name: Container smoke test
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['src/**', 'public/**', 'package*.json', 'Dockerfile', 'nginx.conf', 'scripts/container-smoke.mjs', '.github/workflows/container-smoke.yml']
+  pull_request:
+    paths: ['src/**', 'public/**', 'package*.json', 'Dockerfile', 'nginx.conf', 'scripts/container-smoke.mjs', '.github/workflows/container-smoke.yml']
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    if: github.event.repository.private == false
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - name: Build container without publishing an image
+        run: docker build --tag kubekin-smoke:local .
+      - name: Run container without outbound networking
+        run: docker run --detach --name kubekin-smoke --network none kubekin-smoke:local
+      - name: Inspect isolated container nginx HTTP
+        run: |
+          docker exec kubekin-smoke nginx -t
+          docker exec kubekin-smoke wget -q -O /tmp/index.html http://127.0.0.1:8080/
+          docker exec kubekin-smoke sh -c 'test -s /tmp/index.html'
+      - name: Run browser against actual container
+        run: |
+          docker rm -f kubekin-smoke
+          docker run --detach --name kubekin-smoke -p 127.0.0.1:8080:8080 kubekin-smoke:local
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/ >/dev/null && break; sleep 1; done
+          node scripts/container-smoke.mjs
+      - name: Container logs
+        if: always()
+        run: docker logs kubekin-smoke || true
+      - name: Screenshot evidence in logs (no stored artifacts or cache)
+        if: always()
+        run: |
+          for f in smoke-artifacts/*.png; do
+            test -f "$f" || continue
+            echo "SCREENSHOT_BEGIN $(basename "$f")"
+            base64 -w 100 "$f"
+            echo "SCREENSHOT_END"
+          done
+      - name: Clean up
+        if: always()
+        run: docker rm -f kubekin-smoke || true
