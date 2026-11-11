@@ -6,7 +6,7 @@ export const NODE_H = 64
 const elk = new ELK()
 
 export interface Placed { id: string; x: number; y: number; w: number; h: number; parent?: string }
-export interface LayoutResult { nodes: Placed[]; groups: Placed[] }
+export interface LayoutResult { nodes: Placed[]; groups: Placed[]; routes: Record<string, {x: number; y: number}[]> }
 
 export const nsLabel = (ns: string) => (ns === '' ? 'cluster-scoped' : ns)
 
@@ -49,33 +49,38 @@ export async function layout(a: Analysis, hiddenEdgeTypes: Set<string>, aspect =
     byNs.set(r.namespace, arr)
   }
   const order = [...byNs.keys()].sort((x, y) => (x === '' ? 1 : y === '' ? -1 : x.localeCompare(y)))
+  const routes: Record<string, {x: number; y: number}[]> = {}
   const PAD = { top: 40, left: 16, bottom: 16, right: 16 }
-  const groupsOut: { id: string; w: number; h: number; nodes: Placed[] }[] = []
+  const groupsOut: { id: string; w: number; h: number; nodes: Placed[]; routes: Record<string, {x: number; y: number}[]> }[] = []
   for (const ns of order) {
     const rs = byNs.get(ns)!
     const ids = new Set(rs.map((r) => r.id))
     const allEdges = a.edges.filter((e) => !hiddenEdgeTypes.has(e.type) && ids.has(e.source) && ids.has(e.target))
-    const comps: { id: string; w: number; h: number; nodes: Placed[] }[] = []
+    const comps: { id: string; w: number; h: number; nodes: Placed[]; routes: Record<string, {x: number; y: number}[]> }[] = []
     for (const [i, comp] of components(rs, allEdges).entries()) {
       const cids = new Set(comp.map((r) => r.id))
       const g: any = await elk.layout({
         id: `c${i}`,
-        layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.padding': '[top=0,left=0,bottom=0,right=0]',
+        layoutOptions: { 'elk.algorithm': 'layered', 'elk.edgeRouting': 'ORTHOGONAL', 'elk.direction': 'RIGHT', 'elk.padding': '[top=0,left=0,bottom=0,right=0]',
           'elk.spacing.nodeNode': '16', 'elk.layered.spacing.nodeNodeBetweenLayers': '56', 'elk.layered.spacing.edgeNodeBetweenLayers': '20',
           'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP' },
         children: comp.map((r) => ({ id: r.id, width: NODE_W, height: NODE_H })),
         edges: allEdges.filter((e) => cids.has(e.source) && cids.has(e.target)).map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
       } as any)
-      comps.push({ id: `c${i}`, w: g.width, h: g.height, nodes: (g.children ?? []).map((n: any) => ({ id: n.id, x: n.x, y: n.y, w: n.width, h: n.height })) })
+      const croutes: Record<string, {x: number; y: number}[]> = {}
+      for (const e of g.edges ?? []) { const sec = e.sections?.[0]; if (sec) croutes[e.id] = [sec.startPoint, ...(sec.bendPoints ?? []), sec.endPoint] }
+      comps.push({ routes: croutes, id: `c${i}`, w: g.width, h: g.height, nodes: (g.children ?? []).map((n: any) => ({ id: n.id, x: n.x, y: n.y, w: n.width, h: n.height })) })
     }
     const packed = shelfPack(comps, Math.max(1.2, aspect), 24)
+    const nroutes: Record<string, {x: number; y: number}[]> = {}
+    for (const {item, x, y} of packed.placed) for (const [id, pts] of Object.entries(item.routes)) nroutes[id] = pts.map(p => ({x: p.x+x+PAD.left, y:p.y+y+PAD.top}))
     const nodes: Placed[] = []
     for (const { item, x, y } of packed.placed) for (const n of item.nodes) nodes.push({ ...n, x: n.x + x + PAD.left, y: n.y + y + PAD.top, parent: `ns:${ns}` })
-    groupsOut.push({ id: `ns:${ns}`, w: packed.w + PAD.left + PAD.right, h: packed.h + PAD.top + PAD.bottom, nodes })
+    groupsOut.push({ routes: nroutes, id: `ns:${ns}`, w: packed.w + PAD.left + PAD.right, h: packed.h + PAD.top + PAD.bottom, nodes })
   }
   const top = shelfPack(groupsOut, aspect, 36)
   const groups: Placed[] = []
   const nodes: Placed[] = []
-  for (const { item, x, y } of top.placed) { groups.push({ id: item.id, x, y, w: item.w, h: item.h }); nodes.push(...item.nodes) }
-  return { nodes, groups }
+  for (const { item, x, y } of top.placed) { for (const [id, pts] of Object.entries(item.routes)) routes[id] = pts.map(p => ({x:p.x+x, y:p.y+y})); groups.push({ id: item.id, x, y, w: item.w, h: item.h }); nodes.push(...item.nodes) }
+  return { nodes, groups, routes }
 }

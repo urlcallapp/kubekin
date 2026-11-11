@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ReactFlow, Background, Controls, MiniMap, Handle, Position, MarkerType, useReactFlow, ReactFlowProvider,
+  ReactFlow, Background, Controls, MiniMap, Handle, Position, MarkerType, useReactFlow, ReactFlowProvider, BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps, getViewportForBounds,
   type Node, type Edge as RFEdge, type NodeProps,
 } from '@xyflow/react'
 import Editor, { type Focus } from './Editor'
@@ -42,6 +42,17 @@ function ResNode({ data }: NodeProps) {
 function GroupNode({ data }: NodeProps) {
   return <div className="gnode"><span>{String(data.label)}</span></div>
 }
+function RoutedEdge(p: EdgeProps) {
+  const pts = p.data?.points as {x:number;y:number}[] | undefined
+  let path: string, lx: number, ly: number
+  if (pts?.length) {
+    path = pts.map((v,i) => `${i ? 'L' : 'M'}${v.x},${v.y}`).join(' ')
+    const mid = Math.max(0, Math.floor((pts.length-1)/2)); const a = pts[mid], b = pts[mid+1] ?? a
+    lx = (a.x+b.x)/2; ly = (a.y+b.y)/2
+  } else { [path,lx,ly] = getSmoothStepPath(p) }
+  return <><BaseEdge path={path} markerEnd={p.markerEnd} style={p.style} interactionWidth={16} /><EdgeLabelRenderer><span className="edge-label" style={{position:'absolute', transform:`translate(-50%, -50%) translate(${lx}px,${ly}px)`, fontSize:10, color:p.labelStyle?.fill as string, opacity:p.style?.opacity}}>{p.label}</span></EdgeLabelRenderer></>
+}
+const edgeTypes = { routed: RoutedEdge }
 const nodeTypes = { res: ResNode, group: GroupNode }
 
 function Graph(props: {
@@ -91,19 +102,24 @@ function Graph(props: {
       const st = EDGE_STYLE[e.type]
       const active = !selected || e.source === selected || e.target === selected
       return {
-        id: e.id, source: e.source, target: e.target, label: e.label, type: 'default', zIndex: 1,
+        id: e.id, source: e.source, target: e.target, label: e.label, type: 'routed', zIndex: 0,
         style: { stroke: st.color, strokeWidth: active ? 2 : 1, strokeDasharray: e.inferred ? '6 4' : undefined, opacity: active ? 1 : 0.15 },
         labelStyle: { fontSize: 10, fill: st.color, opacity: active ? 1 : 0.15 },
         labelBgStyle: { fill: '#fff', fillOpacity: 0.85 },
         markerEnd: { type: MarkerType.ArrowClosed, color: st.color, width: 16, height: 16 },
-        data: { edge: e },
+        data: { edge: e, points: lay?.routes[e.id] },
       }
     })
   }, [a, hidden, lay, selected])
 
-  useEffect(() => { if (lay) { const t = setTimeout(() => rf.fitBounds(boundsOf(lay), { padding: 0.04, duration: 200 }), 60); return () => clearTimeout(t) } }, [fitKey, lay]) // eslint-disable-line
+  useEffect(() => { if (lay) { const t = setTimeout(() => rf.setViewport(getViewportForBounds(boundsOf(lay), rf.getViewport().zoom ? document.querySelector('.react-flow')!.clientWidth : 800, document.querySelector('.react-flow')!.clientHeight, 0.1, 1.1, 0.08), {duration:200}), 60); return () => clearTimeout(t) } }, [fitKey, lay]) // eslint-disable-line
+  useEffect(() => {
+    if (!selected || !lay) return
+    const n = lay.nodes.find(n => n.id === selected), g = n && lay.groups.find(g => g.id === n.parent)
+    if (n && g) rf.setCenter(n.x + g.x + NODE_W/2, n.y + g.y + NODE_H/2, {zoom: Math.max(rf.getZoom(), 0.8), duration: 250})
+  }, [selected])
   return (
-    <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} minZoom={0.1} maxZoom={2} nodesDraggable={false} nodesConnectable={false}
+    <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} minZoom={0.1} maxZoom={2} nodesDraggable={false} nodesConnectable={false}
       onNodeClick={(_, n) => n.type === 'res' && onSelect(n.id)} onPaneClick={() => onSelect(null)} onEdgeClick={(_, e) => onSelect((e.data as any).edge.source)}
       fitView proOptions={{ hideAttribution: false }}>
       <Background gap={20} color="#e2e8f0" />

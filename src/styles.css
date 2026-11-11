@@ -68,3 +68,10 @@ main.wide { grid-template-columns: 0 1fr 0 } main.wide .left, main.wide .right {
   main .mid { order: 1 } main .left { order: 2 } main .right { order: 3; max-height: 40vh }
   .minimap { display: none } .mid .legend { position: static; max-width: none; border-radius: 0; border-width: 1px 0 0; font-size: 11px; gap: 8px }
 }
+
+.mid .legend { position: static; max-width: none; flex-shrink: 0; border-radius: 0; padding: 8px 10px; min-height: 42px; border-width: 1px 0 0 }
+.minimap { display: none }
+
+.edge-label { background: #ffffffed; padding: 1px 3px; border-radius: 3px; pointer-events: none }
+
+.react-flow__node-group { border: 0; background: transparent; padding: 0 }

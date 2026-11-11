@@ -73,3 +73,15 @@ describe('helm', () => {
     expect(c.find((x) => x.id === 'windows')!.command).not.toContain('&&')
   })
 })
+
+it('owner evidence belongs to the child ownerReferences', () => {
+  const text = 'apiVersion: v1\nkind: Pod\nmetadata: {name: p, ownerReferences: [{kind: ReplicaSet, name: rs}]}'; const r = analyze(text)
+  expect(text.slice(...r.edges[0].evidenceRange!)).toContain('ReplicaSet')
+})
+it('rejects duplicate YAML keys instead of silently overwriting', () => {
+  expect(analyze('kind: Pod\nkind: Service\nmetadata: {name: p}').syntaxErrors).toBeGreaterThan(0)
+})
+it('policy/v1 empty PDB selector selects all templates in its namespace', () => {
+  const r = analyze('apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata: {name: pdb}\nspec: {selector: {}}\n---\napiVersion: v1\nkind: Pod\nmetadata: {name: p}')
+  expect(r.edges.some(e => e.type === 'selects')).toBe(true)
+})

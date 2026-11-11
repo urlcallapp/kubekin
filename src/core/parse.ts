@@ -5,7 +5,7 @@ export const CLUSTER_SCOPED = new Set([
   'Namespace', 'Node', 'PersistentVolume', 'StorageClass', 'ClusterRole', 'ClusterRoleBinding',
   'CustomResourceDefinition', 'PriorityClass', 'IngressClass', 'APIService', 'ClusterIssuer',
   'MutatingWebhookConfiguration', 'ValidatingWebhookConfiguration', 'GatewayClass', 'CSIDriver',
-  'RuntimeClass', 'PodSecurityPolicy', 'AppProject',
+  'RuntimeClass', 'PodSecurityPolicy',
 ])
 
 export interface ParseResult {
@@ -21,7 +21,7 @@ const did = () => `d${++dseq}`
 
 export function parseManifests(text: string): ParseResult {
   const lc = new LineCounter()
-  const docs = parseAllDocuments(text, { lineCounter: lc, prettyErrors: false, uniqueKeys: false })
+  const docs = parseAllDocuments(text, { lineCounter: lc, prettyErrors: false, uniqueKeys: true })
   const resources: Resource[] = []
   const diagnostics: Diagnostic[] = []
   const seen = new Map<string, Resource>()
@@ -33,7 +33,8 @@ export function parseManifests(text: string): ParseResult {
     diagnostics.push({ id: did(), severity, message, range, line: range ? lc.linePos(range[0]).line : undefined, resourceId })
 
   const addResource = (doc: Document, node: YAMLMap) => {
-    const obj = node.toJSON() as any
+    let obj: any
+    try { obj = node.toJSON() } catch { add('error', 'Cannot expand this YAML document (invalid alias).', [node.range![0], node.range![1]]); syntaxErrors++; return }
     const kind = obj?.kind
     const meta = obj?.metadata ?? {}
     const range: Range = [node.range![0], node.range![1]]
@@ -42,6 +43,7 @@ export function parseManifests(text: string): ParseResult {
       return
     }
     if (!obj.apiVersion) add('warning', `${kind}: missing "apiVersion".`, range)
+    if (meta.name != null && typeof meta.name !== 'string') { add('warning', `${kind}: metadata.name must be a string.`, range); return }
     let name: string = meta.name ?? ''
     if (!name && meta.generateName) name = `${meta.generateName}*`
     const nameNode = node.getIn(['metadata', 'name'], true) as any

@@ -23,3 +23,13 @@ Inspired by Konstellate, KubeDiagrams and Monokle; no code reused.
 ## Limits (v0.1)
 
 Public raw URLs only (CORS applies). Selector matches are inferences. Helm/Kustomize must be rendered first.
+
+## Map behavior and current limits
+
+The graph uses ELK orthogonal routes within each namespace; cross-namespace edges use a fallback route. These are manifest relationships, not a live cluster topology. `ownerReferences` are explicit; selectors against pod templates are inferred. A referenced object not loaded here is marked "not in input", not declared missing from the cluster.
+
+Maps with more than 40 resources start in a simplified view, hiding ConfigMap, Secret, ServiceAccount, PVC, PV and StorageClass boxes. The banner and "config & storage" checkbox restore them. Clicking a hidden resource in YAML also restores it. Click a box to center/zoom it and inspect its full relationships. Pan and zoom for dense inputs.
+
+Valid YAML documents still map if another document has a syntax error; a red banner makes the incomplete map explicit. Duplicate YAML keys are rejected. This is not a Kubernetes schema validator, RBAC checker, deployment tool or general-purpose IDE. Unknown custom-resource scope cannot be determined without a rule/schema and defaults to namespace `default` when omitted; identities currently use kind/namespace/name rather than API group, so don't combine same-named custom kinds from different API groups.
+
+No analytics or remote fonts. The application, editor, graph library and Kubernetes icon set are bundled into the static build. URL import is intentionally network-dependent and only works where the URL server permits CORS. Docker build needs access to the base images and npm dependencies; the resulting static image needs no internet for paste/file mapping. Docker configuration is provided but has not yet been run in a Docker runtime.

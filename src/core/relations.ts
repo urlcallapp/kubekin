@@ -36,6 +36,7 @@ function matchSelector(sel: any, labels: Record<string, string>): boolean {
   if (entries.length === 0 && exprs.length === 0) return false
   for (const [k, v] of entries) if (labels[k] !== String(v)) return false
   for (const e of exprs) {
+    if (!['In', 'NotIn', 'Exists', 'DoesNotExist'].includes(e.operator)) return false
     const has = e.key in labels
     const val = labels[e.key]
     if (e.operator === 'In' && !(has && (e.values ?? []).map(String).includes(val))) return false
@@ -100,6 +101,8 @@ export function analyze(text: string): Analysis {
       if (!ow?.kind || !ow?.name) return
       const t = find(ow.kind, ow.name, r.namespace) ?? ghost(ow.kind, ow.name, r.namespace, r)
       addEdge(t, r, 'owns', 'ownerReference', ['metadata', 'ownerReferences', i])
+      const edge = edges[edges.length - 1]
+      if (edge) edge.evidenceRange = rangeOf(r, ['metadata', 'ownerReferences', i])
     })
 
     // --- pod spec references
@@ -213,7 +216,7 @@ export function analyze(text: string): Analysis {
         const empty = !Object.keys(sel.matchLabels ?? {}).length && !(sel.matchExpressions ?? []).length
         for (const { r, l } of withPodLabels) {
           if (r.namespace !== s.namespace || r.kind === 'ReplicaSet') continue
-          if (empty ? s.kind === 'NetworkPolicy' : matchSelector(sel, l)) addEdge(s, r, 'selects', empty ? 'all pods' : 'podSelector', path, true)
+          if (empty ? (s.kind === 'NetworkPolicy' || s.apiVersion === 'policy/v1') : matchSelector(sel, l)) addEdge(s, r, 'selects', empty ? 'all pods' : 'podSelector', path, true)
         }
       }
     }
