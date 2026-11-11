@@ -61,3 +61,6 @@ try {
   assert.deepEqual(pageErrors, [], 'Browser errors')
   console.log('PASS: site HTTP, sample, local icons, selection, offline paste/file and Helm; no external requests or page errors.')
 } finally { await browser.close() }
+
+// Phone inspector/source navigation runs against this same real container.
+await import('./mobile-smoke.mjs')

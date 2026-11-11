@@ -6,7 +6,7 @@ import { yaml } from '@codemirror/lang-yaml'
 import { setDiagnostics, lintGutter } from '@codemirror/lint'
 import type { Diagnostic } from './core/types'
 
-export interface Focus { from: number; to: number; nonce: number }
+export interface Focus { from: number; to: number; nonce: number; activate?: boolean }
 interface Props {
   value: string
   readOnly?: boolean
@@ -64,10 +64,26 @@ export default function Editor({ value, readOnly, onChange, onCursor, focus, dia
     const len = v.state.doc.length
     const from = Math.min(focus.from, len)
     const to = Math.min(Math.max(focus.to, from), len)
-    programmatic.current = true
-    v.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: 'start', yMargin: 40 }) })
-    programmatic.current = false
-    v.focus()
+    if (focus.activate !== false) {
+      programmatic.current = true
+      v.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: 'start', yMargin: 40 }) })
+      programmatic.current = false
+      v.focus()
+      return
+    }
+    // A phone view can have just become visible. Let CodeMirror measure its
+    // viewport before scrolling, otherwise it uses the hidden editor's size.
+    let nextFrame = 0
+    const frame = requestAnimationFrame(() => {
+      nextFrame = requestAnimationFrame(() => {
+        programmatic.current = true
+        v.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: 'center' }) })
+        programmatic.current = false
+        // Source navigation on phones should not summon the keyboard.
+        if (focus.activate !== false) v.focus()
+      })
+    })
+    return () => { cancelAnimationFrame(frame); cancelAnimationFrame(nextFrame) }
   }, [focus])
 
   useEffect(() => {

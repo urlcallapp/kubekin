@@ -20,6 +20,7 @@ const EDGE_STYLE: Record<EdgeType, { color: string; name: string; help: string }
 }
 
 type Dlg = null | 'import' | 'helm' | 'help'
+type MobileView = 'map' | 'yaml' | 'details' | 'problems'
 
 function ResNode({ data }: NodeProps) {
   const r = data.res as Resource
@@ -245,6 +246,14 @@ function Inner() {
   const [source, setSource] = useState('built-in sample')
   const [working, setWorking] = useState(SAMPLE)
   const [tab, setTab] = useState<'work' | 'orig'>('work')
+  const [mobileView, setMobileView] = useState<MobileView>('map')
+  const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 900px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 900px)')
+    const sync = () => setMobile(mq.matches)
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
   const [rtab, setRtab] = useState<'details' | 'problems'>('details')
   const [dlg, setDlg] = useState<Dlg>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -257,6 +266,7 @@ function Inner() {
   const nonce = useRef(0)
   const [notice, setNotice] = useState<string[]>([])
   const [wide, setWide] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [aspect, setAspect] = useState(1.6)
   const midRef = useRef<HTMLElement>(null)
   useEffect(() => {
@@ -291,25 +301,26 @@ function Inner() {
     return () => { live = false }
   }, [structKey]) // eslint-disable-line
 
-  const jump = useCallback((range?: [number, number]) => {
+  const jump = useCallback((range?: [number, number], reveal = true) => {
     if (!range) return
     setTab('work')
-    setFocus({ from: range[0], to: range[1], nonce: ++nonce.current })
-  }, [])
+    if (reveal) setMobileView('yaml')
+    setFocus({ from: range[0], to: range[1], nonce: ++nonce.current, activate: !mobile })
+  }, [mobile])
   const resById = useMemo(() => new Map(a.resources.map((r) => [r.id, r])), [a])
   const sel = selected ? resById.get(selected) : undefined
   useEffect(() => { if (selected && !resById.has(selected)) setSelected(null) }, [resById, selected])
 
   const onSelect = (id: string | null) => {
     setSelected(id)
-    if (id) { setRtab('details'); const r = resById.get(id); if (r && !r.ghost) jump(r.range) }
+    if (id) { setRtab('details'); setMobileView('details'); const r = resById.get(id); if (r && !r.ghost) jump(r.range, false) }
   }
   const onCursor = (pos: number) => {
     const hit = a.resources.filter((r) => !r.ghost && r.range[0] <= pos && pos <= r.range[1]).sort((x, y) => (x.range[1] - x.range[0]) - (y.range[1] - y.range[0]))[0]
     setSelected(hit ? hit.id : null)
     if (hit) { setRtab('details'); if (!detailOn && DETAIL_KINDS.has(hit.kind)) setShowDetail(true) }
   }
-  const load = (text: string, src: string, notes: string[] = []) => { setNotice(notes); setOriginal(text); setWorking(text); setDebounced(text); setSource(src); setDlg(null); setSelected(null); setTab('work'); lastStruct.current = ''; setFitKey((k) => k + 1) }
+  const load = (text: string, src: string, notes: string[] = []) => { setNotice(notes); setOriginal(text); setWorking(text); setDebounced(text); setSource(src); setToolsOpen(false); setMobileView('map'); setDlg(null); setSelected(null); setTab('work'); lastStruct.current = ''; setFitKey((k) => k + 1) }
   const modified = working !== original
   const errCount = a.diagnostics.filter((d) => d.severity === 'error').length
   const rels = sel ? a.edges.filter((e) => e.source === sel.id || e.target === sel.id) : []
@@ -317,18 +328,27 @@ function Inner() {
 
   return (
     <div className="app">
-      <header>
+      <header className={toolsOpen ? 'tools-open' : ''}>
         <div className="brand"><img src={`${import.meta.env.BASE_URL}icons/deploy.svg`} alt="" /> <b>KubeKin</b><span className="tag">manifest relationship map</span></div>
+        <button className="btn mobile-tools" aria-expanded={toolsOpen} onClick={() => setToolsOpen(!toolsOpen)}>{toolsOpen ? 'Close tools' : 'Tools'}</button>
         <div className="row grow">
           <button className="btn primary" onClick={() => setDlg('import')}>Load manifests</button>
           <button className="btn" onClick={() => load(SAMPLE, 'built-in sample')}>Sample</button>
           <button className="btn" onClick={() => setDlg('helm')}>Helm hints</button>
           <input className="search" placeholder="Find kind or name..." value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
-        <button className="btn" onClick={() => { setWide(!wide); setFitKey((k) => k + 1) }}>{wide ? 'Show panels' : 'Focus map'}</button>
+        <button className="btn focus-map" onClick={() => { setWide(!wide); setFitKey((k) => k + 1) }}>{wide ? 'Show panels' : 'Focus map'}</button>
         <button className="btn" onClick={() => setDlg('help')}>How to read</button>
       </header>
-      <main className={wide ? 'wide' : ''}>
+      <nav className="mobile-nav" aria-label="Workspace views">
+        {(['map', 'yaml', 'details', 'problems'] as const).map(v => (
+          <button key={v} type="button" aria-pressed={mobileView === v} onClick={() => {
+            setMobileView(v)
+            if (v === 'details' || v === 'problems') setRtab(v)
+          }}>{v === 'map' ? 'Map' : v === 'yaml' ? 'YAML' : v === 'details' ? 'Details' : `Problems (${a.diagnostics.length})`}</button>
+        ))}
+      </nav>
+      <main className={wide && !mobile ? 'wide' : ''} data-mobile-view={mobileView}>
         <section className="left">
           <div className="tabs">
             <button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>Working copy{modified ? ' ●' : ''}</button>
@@ -345,7 +365,7 @@ function Inner() {
         </section>
         <section className="mid" ref={midRef}>
           {a.syntaxErrors > 0 && (
-            <div className="banner err">{a.syntaxErrors} YAML syntax error{a.syntaxErrors > 1 ? 's' : ''}: the affected document{a.syntaxErrors > 1 ? 's are' : ' is'} missing from this map. <button className="link" onClick={() => { setRtab('problems') }}>See problems</button></div>
+            <div className="banner err">{a.syntaxErrors} YAML syntax error{a.syntaxErrors > 1 ? 's' : ''}: the affected document{a.syntaxErrors > 1 ? 's are' : ' is'} missing from this map. <button className="link" onClick={() => { setRtab('problems'); setMobileView('problems') }}>See problems</button></div>
           )}
           {a.looksLikeHelmTemplate && <div className="banner warn">This looks like a Helm template, not rendered YAML. <button className="link" onClick={() => setDlg('helm')}>Show how to render it</button></div>}
           {notice.length > 0 && <div className="banner warn"><b>Some sources could not be loaded:</b> {notice.join(' | ')} <button className="link" onClick={() => setNotice([])}>Dismiss</button></div>}
@@ -368,12 +388,12 @@ function Inner() {
             <button className="btn sm" onClick={() => setFitKey((k) => k + 1)}>Fit</button>
           </div>
         </section>
-        <aside className="right">
+        <aside className="right" aria-label="Resource inspector">
           <div className="tabs">
             <button className={rtab === 'details' ? 'on' : ''} onClick={() => setRtab('details')}>Details</button>
             <button className={rtab === 'problems' ? 'on' : ''} onClick={() => setRtab('problems')}>Problems{a.diagnostics.length ? ` (${a.diagnostics.length})` : ''}{errCount ? ' ⚠' : ''}</button>
           </div>
-          <div className="panel">
+          <div className="panel" tabIndex={0} aria-label={rtab === 'details' ? 'Resource details' : 'Manifest problems'}>
             {rtab === 'details' && (sel ? (
               <>
                 <div className="dhead">{iconFor(sel.kind) && <img src={iconFor(sel.kind)!} alt="" />}<div><div className="rkind">{sel.kind}</div><h3>{sel.name}</h3></div></div>
@@ -401,7 +421,7 @@ function Inner() {
                   <li key={d.id} className={d.severity}>
                     <button className="plink" onClick={() => { if (d.resourceId) setSelected(d.resourceId); jump(d.range) }}>
                       <span className={`pbadge ${d.severity}`}>{d.severity === 'info' ? 'i' : '!'}</span>
-                      <span>{d.message}{d.range ? <em> (line {d.line ?? '?'})</em> : null}</span>
+                      <span>{d.message}{d.range ? <em> (line {d.line ?? debounced.slice(0, d.range[0]).split('\n').length})</em> : null}</span>
                     </button>
                   </li>
                 ))}
