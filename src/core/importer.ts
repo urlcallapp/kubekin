@@ -12,18 +12,19 @@ export function toRawUrl(input: string): string {
 export function parseUrlList(text: string): string[] {
   return text.split(/\s+/).map((s) => s.trim()).filter((s) => /^https?:\/\//i.test(s)).map(toRawUrl)
 }
-export interface FetchOutcome { text: string; errors: string[] }
+export interface FetchOutcome { text: string; errors: string[]; ok: string[] }
 export async function fetchUrls(urls: string[], f: typeof fetch = fetch): Promise<FetchOutcome> {
   const parts: string[] = []
   const errors: string[] = []
+  const ok: string[] = []
   for (const url of urls) {
     try {
       const res = await f(url)
       if (!res.ok) { errors.push(`${url}: HTTP ${res.status}${res.status === 404 ? ' (private repos need a token and are not supported; use a public raw URL or paste the text)' : ''}`); continue }
-      parts.push(`# source: ${url}\n${await res.text()}`)
+      parts.push(`# source: ${url}\n${await res.text()}`); ok.push(url)
     } catch {
       errors.push(`${url}: the browser could not fetch it (network error or the server blocks cross-origin requests - CORS). Open the URL, copy the text and paste it instead.`)
     }
   }
-  return { text: parts.join('\n---\n'), errors }
+  return { text: parts.join('\n---\n'), errors, ok }
 }

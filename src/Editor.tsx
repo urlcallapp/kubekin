@@ -40,6 +40,7 @@ export default function Editor({ value, readOnly, onChange, onCursor, focus, dia
       }),
     })
     view.current = v
+    ;(window as any).__kkView = v
     return () => v.destroy()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

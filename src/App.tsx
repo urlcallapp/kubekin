@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ReactFlow, Background, Controls, MiniMap, Handle, Position, MarkerType, useReactFlow, ReactFlowProvider, useNodesInitialized,
+  ReactFlow, Background, Controls, MiniMap, Handle, Position, MarkerType, useReactFlow, ReactFlowProvider,
   type Node, type Edge as RFEdge, type NodeProps,
 } from '@xyflow/react'
 import Editor, { type Focus } from './Editor'
@@ -30,8 +30,9 @@ function ResNode({ data }: NodeProps) {
       <Handle type="target" position={Position.Left} />
       {icon ? <img src={icon} alt="" className="ricon" draggable={false} /> : <div className="ricon generic" title="Custom or unrecognised kind">{r.kind.slice(0, 2)}</div>}
       <div className="rtext">
-        <div className="rkind">{r.kind}{r.ghost ? ' · not in input' : ''}</div>
+        <div className="rkind">{r.kind}</div>
         <div className="rname">{r.name}</div>
+        {r.ghost ? <div className="rghost">not in input</div> : null}
       </div>
       {data.problem ? <span className={`pbadge ${data.problem}`}>{data.problem === 'info' ? 'i' : '!'}</span> : null}
       <Handle type="source" position={Position.Right} />
@@ -100,17 +101,23 @@ function Graph(props: {
     })
   }, [a, hidden, lay, selected])
 
-  const ready = useNodesInitialized()
-  useEffect(() => { if (lay && ready) { const t = setTimeout(() => rf.fitView({ padding: 0.08, duration: 200 }), 60); return () => clearTimeout(t) } }, [fitKey, ready, lay === null]) // eslint-disable-line
+  useEffect(() => { if (lay) { const t = setTimeout(() => rf.fitBounds(boundsOf(lay), { padding: 0.04, duration: 200 }), 60); return () => clearTimeout(t) } }, [fitKey, lay]) // eslint-disable-line
   return (
     <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} minZoom={0.1} maxZoom={2} nodesDraggable={false} nodesConnectable={false}
       onNodeClick={(_, n) => n.type === 'res' && onSelect(n.id)} onPaneClick={() => onSelect(null)} onEdgeClick={(_, e) => onSelect((e.data as any).edge.source)}
       fitView proOptions={{ hideAttribution: false }}>
       <Background gap={20} color="#e2e8f0" />
       <Controls showInteractive={false} />
-      <MiniMap pannable zoomable nodeColor={(n) => (n.type === 'group' ? '#f1f5f9' : '#94a3b8')} />
+      <MiniMap className="minimap" pannable zoomable nodeColor={(n) => (n.type === 'group' ? '#f1f5f9' : '#94a3b8')} />
     </ReactFlow>
   )
+}
+
+function boundsOf(lay: LayoutResult) {
+  const xs = lay.groups.map((g) => g.x), ys = lay.groups.map((g) => g.y)
+  const x2 = lay.groups.map((g) => g.x + g.w), y2 = lay.groups.map((g) => g.y + g.h)
+  const x = Math.min(...xs), y = Math.min(...ys)
+  return { x, y, width: Math.max(...x2) - x, height: Math.max(...y2) - y }
 }
 
 function Copy({ text }: { text: string }) {
@@ -121,7 +128,7 @@ function Copy({ text }: { text: string }) {
   }}>{ok ? 'Copied' : 'Copy'}</button>
 }
 
-function ImportDialog({ onClose, onLoad }: { onClose: () => void; onLoad: (text: string, source: string) => void }) {
+function ImportDialog({ onClose, onLoad }: { onClose: () => void; onLoad: (text: string, source: string, notes?: string[]) => void }) {
   const [tab, setTab] = useState<'paste' | 'url' | 'file'>('paste')
   const [text, setText] = useState('')
   const [urls, setUrls] = useState('')
@@ -135,7 +142,7 @@ function ImportDialog({ onClose, onLoad }: { onClose: () => void; onLoad: (text:
     setBusy(true)
     const r = await fetchUrls(list)
     setBusy(false); setErrs(r.errors)
-    if (r.text) { onLoad(r.text, list.join(', ')); }
+    if (r.text) { onLoad(r.text, r.ok.join(', '), r.errors) }
   }
   return (
     <div className="modal-bg" onMouseDown={onClose}>
@@ -232,18 +239,39 @@ function Inner() {
   const [fitKey, setFitKey] = useState(0)
   const [debounced, setDebounced] = useState(SAMPLE)
   const nonce = useRef(0)
+  const [notice, setNotice] = useState<string[]>([])
   const [wide, setWide] = useState(false)
+  const [aspect, setAspect] = useState(1.6)
+  const midRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const el = midRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => { const b = Math.round((el.clientWidth / Math.max(1, el.clientHeight)) * 2) / 2; setAspect(Math.min(3, Math.max(0.5, b))) })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   useEffect(() => { const t = setTimeout(() => setDebounced(working), 300); return () => clearTimeout(t) }, [working])
   const a = useMemo(() => analyze(debounced), [debounced])
   const pending = debounced !== working
+  const DETAIL_KINDS = useMemo(() => new Set(['ConfigMap', 'Secret', 'ServiceAccount', 'PersistentVolumeClaim', 'PersistentVolume', 'StorageClass']), [])
+  const [showDetail, setShowDetail] = useState<boolean | null>(null) // null = automatic (hide when the map is dense)
+  const dense = a.resources.length > 40
+  const detailOn = showDetail ?? !dense
+  const view: Analysis = useMemo(() => {
+    if (detailOn) return a
+    const resources = a.resources.filter((r) => !DETAIL_KINDS.has(r.kind))
+    const ids = new Set(resources.map((r) => r.id))
+    return { ...a, resources, edges: a.edges.filter((e) => ids.has(e.source) && ids.has(e.target)) }
+  }, [a, detailOn, DETAIL_KINDS])
+  const hiddenCount = a.resources.length - view.resources.length
 
   // layout depends on structure only (not on selection)
-  const structKey = useMemo(() => a.resources.map((r) => r.id).join('|') + '#' + a.edges.map((e) => e.source + e.target + e.type).join('|') + '#' + [...hidden].join(','), [a, hidden])
+  const structKey = useMemo(() => view.resources.map((r) => r.id).join('|') + '#' + view.edges.map((e) => e.source + e.target + e.type).join('|') + '#' + [...hidden].join(',') + '@' + aspect, [view, hidden, aspect])
   const lastStruct = useRef('')
   useEffect(() => {
     let live = true
-    layout(a, hidden).then((l) => { if (live) { setLay(l); if (lastStruct.current === '' ) setFitKey((k) => k + 1); lastStruct.current = structKey } }).catch(() => {})
+    layout(view, hidden, aspect).then((l) => { if (live) { setLay(l); if (lastStruct.current === '' || lastStruct.current.split('@')[1] !== structKey.split('@')[1]) setFitKey((k) => k + 1); lastStruct.current = structKey } }).catch(() => {})
     return () => { live = false }
   }, [structKey]) // eslint-disable-line
 
@@ -263,9 +291,9 @@ function Inner() {
   const onCursor = (pos: number) => {
     const hit = a.resources.filter((r) => !r.ghost && r.range[0] <= pos && pos <= r.range[1]).sort((x, y) => (x.range[1] - x.range[0]) - (y.range[1] - y.range[0]))[0]
     setSelected(hit ? hit.id : null)
-    if (hit) setRtab('details')
+    if (hit) { setRtab('details'); if (!detailOn && DETAIL_KINDS.has(hit.kind)) setShowDetail(true) }
   }
-  const load = (text: string, src: string) => { setOriginal(text); setWorking(text); setDebounced(text); setSource(src); setDlg(null); setSelected(null); setTab('work'); lastStruct.current = ''; setFitKey((k) => k + 1) }
+  const load = (text: string, src: string, notes: string[] = []) => { setNotice(notes); setOriginal(text); setWorking(text); setDebounced(text); setSource(src); setDlg(null); setSelected(null); setTab('work'); lastStruct.current = ''; setFitKey((k) => k + 1) }
   const modified = working !== original
   const errCount = a.diagnostics.filter((d) => d.severity === 'error').length
   const rels = sel ? a.edges.filter((e) => e.source === sel.id || e.target === sel.id) : []
@@ -299,11 +327,13 @@ function Inner() {
               : <Editor key="o" value={original} readOnly />}
           </div>
         </section>
-        <section className="mid">
+        <section className="mid" ref={midRef}>
           {a.syntaxErrors > 0 && (
             <div className="banner err">{a.syntaxErrors} YAML syntax error{a.syntaxErrors > 1 ? 's' : ''}: the affected document{a.syntaxErrors > 1 ? 's are' : ' is'} missing from this map. <button className="link" onClick={() => { setRtab('problems') }}>See problems</button></div>
           )}
           {a.looksLikeHelmTemplate && <div className="banner warn">This looks like a Helm template, not rendered YAML. <button className="link" onClick={() => setDlg('helm')}>Show how to render it</button></div>}
+          {notice.length > 0 && <div className="banner warn"><b>Some sources could not be loaded:</b> {notice.join(' | ')} <button className="link" onClick={() => setNotice([])}>Dismiss</button></div>}
+          {!detailOn && hiddenCount > 0 && <div className="banner info">Simplified view: {hiddenCount} config and storage resources (ConfigMap, Secret, ServiceAccount, PVC, PV, StorageClass) are hidden because the map is large. <button className="link" onClick={() => setShowDetail(true)}>Show all</button></div>}
           {pending && <div className="banner info">Updating map...</div>}
           {empty ? (
             <div className="empty">
@@ -311,13 +341,14 @@ function Inner() {
               <p>Paste YAML, fetch a raw Git URL, or open a file. Helm chart? Render it first with helm template.</p>
               <div className="row"><button className="btn primary" onClick={() => setDlg('import')}>Load manifests</button><button className="btn" onClick={() => load(SAMPLE, 'built-in sample')}>Try the sample</button><button className="btn" onClick={() => setDlg('helm')}>Helm hints</button></div>
             </div>
-          ) : <Graph a={a} lay={lay} hidden={hidden} selected={selected} search={search} onSelect={onSelect} fitKey={fitKey} />}
+          ) : <Graph a={view} lay={lay} hidden={hidden} selected={selected} search={search} onSelect={onSelect} fitKey={fitKey} />}
           <div className="legend">
             {(Object.keys(EDGE_STYLE) as EdgeType[]).map((t) => (
               <label key={t} title={EDGE_STYLE[t].help}><input type="checkbox" checked={!hidden.has(t)} onChange={() => { const n = new Set(hidden); n.has(t) ? n.delete(t) : n.add(t); setHidden(n) }} />
                 <span className="swatch" style={{ background: EDGE_STYLE[t].color }} />{EDGE_STYLE[t].name}</label>
             ))}
-            <span className="muted">dashed = inferred from labels</span>
+            <span className="muted">dashed arrow = inferred</span>
+            <label title="ConfigMap, Secret, ServiceAccount, PVC, PV, StorageClass"><input type="checkbox" checked={detailOn} onChange={() => setShowDetail(!detailOn)} />config &amp; storage</label>
             <button className="btn sm" onClick={() => setFitKey((k) => k + 1)}>Fit</button>
           </div>
         </section>
