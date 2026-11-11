@@ -65,7 +65,7 @@ export function analyze(text: string): Analysis {
   const resolve = (src:Resource, kind:string, name:string, ns:string, group:string|undefined, path:Path): Resource | undefined => {
     // A missing apiVersion/group in a reference is not permission to choose between API groups.
     const candidates = resources.filter(r => r.kind === kind && r.name === name && (group === undefined || r.group === group) && (r.scope === 'Cluster' || r.namespace === ns))
-    if (candidates.length === 1 && candidates[0].scope !== 'Unknown') return candidates[0]
+    if (group !== undefined && candidates.length === 1 && candidates[0].scope !== 'Unknown') return candidates[0]
     const scope = group === undefined ? 'Unknown' : scopeFor(group,kind)
     if (candidates.length > 1 || scope === 'Unknown' || group === undefined || (scope === 'Namespaced' && ns === '?')) {
       diagnostics.push({id:`u${++k}`,severity:'info',message:`${src.kind} ${src.name}: ${kind} ${name} reference is unresolved (API group or scope is ambiguous/unknown); no link guessed.`,range:src.nameRange,resourceId:src.id})
@@ -98,9 +98,9 @@ export function analyze(text: string): Analysis {
     edges.push({ id: `e${n}`, source: src.id, target: tgt.id, type, label, inferred, evidenceRange: rangeOf(src, path), evidencePath: path.join('.') })
   }
   /** Reference by name to a kind; creates a ghost node (dashed) when absent from the input. */
-  const ref = (src: Resource, kind: string, name: any, path: Path, type: EdgeType, label: string, ns?: string, group: string | undefined = knownGroup(kind)) => {
+  const ref = (src: Resource, kind: string, name: any, path: Path, type: EdgeType, label: string, ns?: string, group: string | undefined | null = knownGroup(kind)) => {
     if (typeof name !== 'string' || !name) return
-    const t = resolve(src,kind,name,ns ?? src.namespace,group,path)
+    const t = resolve(src,kind,name,ns ?? src.namespace,group ?? undefined,path)
     if (t) addEdge(src,t,type,label,path)
   }
   const real = resources.filter((r) => !r.ghost)
@@ -167,7 +167,7 @@ export function analyze(text: string): Analysis {
         break
       case 'HorizontalPodAutoscaler': {
         const t = o?.spec?.scaleTargetRef
-        if (t?.kind && t?.name) ref(r, t.kind, t.name, ['spec', 'scaleTargetRef'], 'references', 'scales', undefined, typeof t.apiVersion === 'string' ? apiGroup(t.apiVersion) : undefined)
+        if (t?.kind && t?.name) ref(r, t.kind, t.name, ['spec', 'scaleTargetRef'], 'references', 'scales', undefined, typeof t.apiVersion === 'string' ? apiGroup(t.apiVersion) : null)
         break
       }
       case 'Ingress': {

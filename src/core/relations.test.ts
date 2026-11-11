@@ -117,3 +117,12 @@ it('custom Service kind does not inherit core Service selector semantics', () =>
   const a = analyze('apiVersion: custom.io/v1\nkind: Service\nmetadata: {name: s, namespace: default}\nspec: {selector: {app: web}}\n---\napiVersion: v1\nkind: Pod\nmetadata: {name: p, labels: {app: web}}')
   expect(a.edges).toHaveLength(0)
 })
+it('HPA target apiVersion distinguishes API groups and missing apiVersion is unresolved', () => {
+ const base = 'apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: x}\n---\napiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata: {name: h}\nspec: {scaleTargetRef: {kind: Deployment, name: xAPI}}'
+ expect(analyze(base.replace('xAPI','x')).edges).toHaveLength(0)
+ expect(analyze(base.replace('xAPI','x, apiVersion: apps/v1')).edges).toHaveLength(1)
+})
+it('missing owner apiVersion never chooses between group collisions', () => {
+ const a = analyze('apiVersion: a.io/v1\nkind: Widget\nmetadata: {name: w, namespace: n}\n---\napiVersion: b.io/v1\nkind: Widget\nmetadata: {name: w, namespace: n}\n---\napiVersion: v1\nkind: Pod\nmetadata: {name: p, namespace: n, ownerReferences: [{kind: Widget, name: w}]}')
+ expect(a.edges).toHaveLength(0)
+})
