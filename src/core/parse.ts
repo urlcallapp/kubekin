@@ -1,3 +1,4 @@
+import { apiGroup, identity, knownScope, type Scope } from './identity'
 import { parseAllDocuments, LineCounter, isMap, isSeq, isScalar, type Document, type YAMLMap } from 'yaml'
 import type { Diagnostic, Range, Resource } from './types'
 
@@ -24,6 +25,12 @@ export function parseManifests(text: string): ParseResult {
   const docs = parseAllDocuments(text, { lineCounter: lc, prettyErrors: false, uniqueKeys: true })
   const resources: Resource[] = []
   const diagnostics: Diagnostic[] = []
+  const scopes = new Map<string, Scope>()
+  const inspectScope = (obj: any) => {
+    if (obj?.kind === 'CustomResourceDefinition' && apiGroup(String(obj.apiVersion)) === 'apiextensions.k8s.io' && obj.spec?.group && obj.spec?.names?.kind && ['Namespaced','Cluster'].includes(obj.spec.scope)) scopes.set(`${obj.spec.group}/${obj.spec.names.kind}`, obj.spec.scope)
+    if (obj?.kind === 'List') for (const it of obj.items ?? []) inspectScope(it)
+  }
+  for (const doc of docs) if (!doc.errors.length) { try { inspectScope(doc.toJS({maxAliasCount:100})) } catch {} }
   const seen = new Map<string, Resource>()
   let syntaxErrors = 0
   let docCount = 0
@@ -52,11 +59,14 @@ export function parseManifests(text: string): ParseResult {
       add('warning', `${kind}: missing metadata.name - skipped.`, range)
       return
     }
-    const namespace = CLUSTER_SCOPED.has(kind) ? '' : String(meta.namespace ?? 'default')
-    const id = `${kind}/${namespace}/${name}`
+    const group = apiGroup(String(obj.apiVersion ?? ''))
+    const scope = scopes.get(`${group}/${kind}`) ?? knownScope(group,kind)
+    const namespace = scope === 'Cluster' ? '' : scope === 'Unknown' && meta.namespace == null ? '?' : String(meta.namespace ?? 'default')
+    const id = identity(group, kind, namespace, name)
+    if (scope === 'Unknown') add('info', `${kind} ${name}: scope is unknown (no supplied CRD). ${meta.namespace == null ? 'No namespace assumed; scope unresolved.' : 'Using the explicit metadata.namespace only.'}`, nameRange, id)
     const labels: Record<string, string> = {}
     for (const [k, v] of Object.entries(meta.labels ?? {})) labels[k] = String(v)
-    const r: Resource = { id, apiVersion: String(obj.apiVersion ?? ''), kind, name, namespace, labels, obj, node, range, nameRange }
+    const r: Resource = { id, group, scope, apiVersion: String(obj.apiVersion ?? ''), kind, name, namespace, labels, obj, node, range, nameRange }
     if (seen.has(id)) {
       add('warning', `Duplicate resource ${kind} "${name}"${namespace ? ` in namespace "${namespace}"` : ''}. The later one is ignored in the map.`, nameRange, id)
       return

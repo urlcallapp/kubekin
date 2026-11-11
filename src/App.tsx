@@ -30,7 +30,7 @@ function ResNode({ data }: NodeProps) {
       <Handle type="target" position={Position.Left} />
       {icon ? <img src={icon} alt="" className="ricon" draggable={false} /> : <div className="ricon generic" title="Custom or unrecognised kind">{r.kind.slice(0, 2)}</div>}
       <div className="rtext">
-        <div className="rkind">{r.kind}</div>
+        <div className="rkind" title={r.group || 'core'}>{r.kind}{r.scope === 'Unknown' ? ' · scope?' : ''}</div>
         <div className="rname">{r.name}</div>
         {r.ghost ? <div className="rghost">not in input</div> : null}
       </div>
@@ -377,7 +377,7 @@ function Inner() {
             {rtab === 'details' && (sel ? (
               <>
                 <div className="dhead">{iconFor(sel.kind) && <img src={iconFor(sel.kind)!} alt="" />}<div><div className="rkind">{sel.kind}</div><h3>{sel.name}</h3></div></div>
-                <dl><dt>Namespace</dt><dd>{nsLabel(sel.namespace)}</dd><dt>apiVersion</dt><dd>{sel.apiVersion || 'n/a'}</dd></dl>
+                <dl><dt>Namespace</dt><dd>{nsLabel(sel.namespace)}</dd><dt>Scope</dt><dd>{sel.scope}</dd><dt>apiVersion</dt><dd>{sel.apiVersion || 'n/a'}</dd></dl>
                 {sel.ghost ? <p className="muted">Referenced by name, but not defined in the loaded text.</p> : <button className="btn sm" onClick={() => jump(sel.range)}>Show in YAML</button>}
                 <h4>Relationships ({rels.length})</h4>
                 {rels.length === 0 && <p className="muted">No links found. Unknown custom resources are shown without guessing.</p>}

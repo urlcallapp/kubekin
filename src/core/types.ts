@@ -5,6 +5,8 @@ export type Severity = 'error' | 'warning' | 'info'
 
 export interface Resource {
   id: string
+  group: string
+  scope: import('./identity').Scope
   apiVersion: string
   kind: string
   name: string

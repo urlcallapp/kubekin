@@ -1,10 +1,12 @@
+import { identity, knownGroup } from './identity'
 import { describe, expect, it } from 'vitest'
 import { analyze } from './relations'
 import { SAMPLE } from './sample'
 import { helmCommands, defaultHelm } from './helm'
 
+const rid = (s:string) => { const [kind,ns,name] = s.split('/'); return identity(knownGroup(kind) ?? '',kind,ns,name) }
 const has = (a: ReturnType<typeof analyze>, s: string, t: string, type: string) =>
-  a.edges.some((e) => e.source === s && e.target === t && e.type === type)
+  a.edges.some((e) => e.source === rid(s) && e.target === rid(t) && e.type === type)
 
 describe('analyze', () => {
   const a = analyze(SAMPLE)
@@ -18,7 +20,7 @@ describe('analyze', () => {
   })
   it('Ingress routes to Service and missing api Service becomes a dashed ghost', () => {
     expect(has(a, 'Ingress/shop/web', 'Service/shop/web', 'routes')).toBe(true)
-    const g = a.resources.find((r) => r.id === 'Service/shop/api')
+    const g = a.resources.find((r) => r.id === rid('Service/shop/api'))
     expect(g?.ghost).toBe(true)
   })
   it('workload references config, secret, pvc, sa; HPA scales deployment', () => {
@@ -27,7 +29,7 @@ describe('analyze', () => {
     expect(has(a, 'HorizontalPodAutoscaler/shop/web', 'Deployment/shop/web', 'references')).toBe(true)
   })
   it('evidence ranges point at the source text', () => {
-    const e = a.edges.find((x) => x.source === 'Service/shop/web' && x.type === 'selects')!
+    const e = a.edges.find((x) => x.source === rid('Service/shop/web') && x.type === 'selects')!
     expect(SAMPLE.slice(...e.evidenceRange!)).toContain('app: web')
   })
   it('explicit ownerReferences produce owns edges; no invented Pods', () => {
@@ -75,7 +77,7 @@ describe('helm', () => {
 })
 
 it('owner evidence belongs to the child ownerReferences', () => {
-  const text = 'apiVersion: v1\nkind: Pod\nmetadata: {name: p, ownerReferences: [{kind: ReplicaSet, name: rs}]}'; const r = analyze(text)
+  const text = 'apiVersion: v1\nkind: Pod\nmetadata: {name: p, ownerReferences: [{apiVersion: apps/v1, kind: ReplicaSet, name: rs}]}'; const r = analyze(text)
   expect(text.slice(...r.edges[0].evidenceRange!)).toContain('ReplicaSet')
 })
 it('rejects duplicate YAML keys instead of silently overwriting', () => {
@@ -84,4 +86,34 @@ it('rejects duplicate YAML keys instead of silently overwriting', () => {
 it('policy/v1 empty PDB selector selects all templates in its namespace', () => {
   const r = analyze('apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata: {name: pdb}\nspec: {selector: {}}\n---\napiVersion: v1\nkind: Pod\nmetadata: {name: p}')
   expect(r.edges.some(e => e.type === 'selects')).toBe(true)
+})
+it('same kind and name in separate API groups never collide', () => {
+  const a = analyze('apiVersion: a.io/v1\nkind: Widget\nmetadata: {name: w}\n---\napiVersion: b.io/v1\nkind: Widget\nmetadata: {name: w}')
+  expect(a.resources.length).toBe(2)
+  expect(new Set(a.resources.map(r=>r.id)).size).toBe(2)
+})
+it('versions in one group identify the same logical resource', () => {
+  const a = analyze('apiVersion: a.io/v1\nkind: Widget\nmetadata: {name: w}\n---\napiVersion: a.io/v2\nkind: Widget\nmetadata: {name: w}')
+  expect(a.resources.length).toBe(1)
+  expect(a.diagnostics.some(d=>d.message.includes('Duplicate'))).toBe(true)
+})
+it('supplied CRD scope is applied even when CRD appears later', () => {
+  const a = analyze('apiVersion: a.io/v1\nkind: Widget\nmetadata: {name: w}\n---\napiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata: {name: widgets.a.io}\nspec: {group: a.io, names: {kind: Widget}, scope: Cluster}')
+  const w = a.resources.find(r=>r.kind==='Widget')!
+  expect(w.scope).toBe('Cluster'); expect(w.namespace).toBe('')
+})
+it('owner apiVersion disambiguates equal kind and name across groups', () => {
+  const a = analyze('apiVersion: a.io/v1\nkind: Widget\nmetadata: {name: w, namespace: n}\n---\napiVersion: b.io/v1\nkind: Widget\nmetadata: {name: w, namespace: n}\n---\napiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata: {name: widgets.a.io}\nspec: {group: a.io, names: {kind: Widget}, scope: Namespaced}\n---\napiVersion: v1\nkind: Pod\nmetadata: {name: p, namespace: n, ownerReferences: [{apiVersion: a.io/v1, kind: Widget, name: w}]}')
+  expect(a.edges.filter(e=>e.type==='owns').map(e=>e.source)).toEqual([identity('a.io','Widget','n','w')])
+})
+it('unknown scope is explicit, not silently default namespace or ghost ownership', () => {
+  const a = analyze('apiVersion: a.io/v1\nkind: Widget\nmetadata: {name: w}\n---\napiVersion: v1\nkind: Pod\nmetadata: {name: p, ownerReferences: [{apiVersion: a.io/v1, kind: Widget, name: w}]}')
+  expect(a.resources.find(r=>r.kind==='Widget')?.namespace).toBe('?')
+  expect(a.edges).toHaveLength(0)
+  expect(a.diagnostics.some(d=>d.message.includes('unresolved'))).toBe(true)
+  expect(a.resources.some(r=>r.ghost)).toBe(false)
+})
+it('custom Service kind does not inherit core Service selector semantics', () => {
+  const a = analyze('apiVersion: custom.io/v1\nkind: Service\nmetadata: {name: s, namespace: default}\nspec: {selector: {app: web}}\n---\napiVersion: v1\nkind: Pod\nmetadata: {name: p, labels: {app: web}}')
+  expect(a.edges).toHaveLength(0)
 })

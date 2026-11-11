@@ -1,3 +1,4 @@
+import { apiGroup, identity, knownScope, knownGroup } from './identity'
 import type { Analysis, Diagnostic, Edge, EdgeType, Range, Resource } from './types'
 import { CLUSTER_SCOPED, parseManifests } from './parse'
 
@@ -57,16 +58,27 @@ export function analyze(text: string): Analysis {
   let n = 0
   let k = 0
 
-  const find = (kind: string, name: string, ns: string) => byId.get(`${kind}/${CLUSTER_SCOPED.has(kind) ? '' : ns}/${name}`)
-  const ghost = (kind: string, name: string, ns: string, from?: Resource): Resource => {
-    const nsx = CLUSTER_SCOPED.has(kind) ? '' : ns
-    const id = `${kind}/${nsx}/${name}`
+  const scopeFor = (group:string,kind:string) => {
+    const existing = resources.find(r => r.group === group && r.kind === kind && r.scope !== 'Unknown')
+    return existing?.scope ?? knownScope(group,kind)
+  }
+  const resolve = (src:Resource, kind:string, name:string, ns:string, group:string|undefined, path:Path): Resource | undefined => {
+    // A missing apiVersion/group in a reference is not permission to choose between API groups.
+    const candidates = resources.filter(r => r.kind === kind && r.name === name && (group === undefined || r.group === group) && (r.scope === 'Cluster' || r.namespace === ns))
+    if (candidates.length === 1 && candidates[0].scope !== 'Unknown') return candidates[0]
+    const scope = group === undefined ? 'Unknown' : scopeFor(group,kind)
+    if (candidates.length > 1 || scope === 'Unknown' || group === undefined || (scope === 'Namespaced' && ns === '?')) {
+      diagnostics.push({id:`u${++k}`,severity:'info',message:`${src.kind} ${src.name}: ${kind} ${name} reference is unresolved (API group or scope is ambiguous/unknown); no link guessed.`,range:src.nameRange,resourceId:src.id})
+      return undefined
+    }
+    const nsx = scope === 'Cluster' ? '' : ns
+    const id = identity(group,kind,nsx,name)
     let g = byId.get(id)
     if (!g) {
-      g = { id, apiVersion: '', kind, name, namespace: nsx, labels: {}, obj: {}, node: null, range: from?.range ?? [0, 0], nameRange: from?.nameRange ?? [0, 0], ghost: true }
-      byId.set(id, g)
-      resources.push(g)
+      g = {id,group,scope,apiVersion:group ? `${group}/?` : 'v1',kind,name,namespace:nsx,labels:{},obj:{},node:null,range:src.range,nameRange:src.nameRange,ghost:true}
+      resources.push(g); byId.set(id,g)
     }
+    void path
     return g
   }
   const rangeOf = (r: Resource, p: Path): Range | undefined => {
@@ -86,10 +98,10 @@ export function analyze(text: string): Analysis {
     edges.push({ id: `e${n}`, source: src.id, target: tgt.id, type, label, inferred, evidenceRange: rangeOf(src, path), evidencePath: path.join('.') })
   }
   /** Reference by name to a kind; creates a ghost node (dashed) when absent from the input. */
-  const ref = (src: Resource, kind: string, name: any, path: Path, type: EdgeType, label: string, ns?: string) => {
+  const ref = (src: Resource, kind: string, name: any, path: Path, type: EdgeType, label: string, ns?: string, group: string | undefined = knownGroup(kind)) => {
     if (typeof name !== 'string' || !name) return
-    const t = find(kind, name, ns ?? src.namespace) ?? ghost(kind, name, ns ?? src.namespace, src)
-    addEdge(src, t, type, label, path)
+    const t = resolve(src,kind,name,ns ?? src.namespace,group,path)
+    if (t) addEdge(src,t,type,label,path)
   }
   const real = resources.filter((r) => !r.ghost)
 
@@ -99,12 +111,16 @@ export function analyze(text: string): Analysis {
     const owners = o?.metadata?.ownerReferences
     if (Array.isArray(owners)) owners.forEach((ow: any, i: number) => {
       if (!ow?.kind || !ow?.name) return
-      const t = find(ow.kind, ow.name, r.namespace) ?? ghost(ow.kind, ow.name, r.namespace, r)
+      const t = resolve(r,ow.kind,ow.name,r.namespace,typeof ow.apiVersion === 'string' ? apiGroup(ow.apiVersion) : undefined,['metadata','ownerReferences',i])
+      if (!t) return
+      if (ow.uid && t.obj?.metadata?.uid && ow.uid !== t.obj.metadata.uid) { diagnostics.push({id:`u${++k}`,severity:'warning',message:'Owner reference UID does not match the loaded owner; no ownership link drawn.',resourceId:r.id,range:r.nameRange}); return }
       addEdge(t, r, 'owns', 'ownerReference', ['metadata', 'ownerReferences', i])
       const edge = edges[edges.length - 1]
       if (edge) edge.evidenceRange = rangeOf(r, ['metadata', 'ownerReferences', i])
     })
 
+    // Only apply known-kind rules to the matching API group, never a same-kind custom resource.
+    if (knownGroup(r.kind) !== r.group) continue
     // --- pod spec references
     const psp = podSpecPath(r.kind)
     if (psp) {
@@ -151,7 +167,7 @@ export function analyze(text: string): Analysis {
         break
       case 'HorizontalPodAutoscaler': {
         const t = o?.spec?.scaleTargetRef
-        if (t?.kind && t?.name) ref(r, t.kind, t.name, ['spec', 'scaleTargetRef'], 'references', 'scales')
+        if (t?.kind && t?.name) ref(r, t.kind, t.name, ['spec', 'scaleTargetRef'], 'references', 'scales', undefined, typeof t.apiVersion === 'string' ? apiGroup(t.apiVersion) : undefined)
         break
       }
       case 'Ingress': {
@@ -166,10 +182,10 @@ export function analyze(text: string): Analysis {
       }
       case 'HTTPRoute': case 'GRPCRoute': case 'TLSRoute': case 'TCPRoute': {
         ;(o?.spec?.parentRefs ?? []).forEach((p: any, i: number) =>
-          ref(r, p?.kind ?? 'Gateway', p?.name, ['spec', 'parentRefs', i], 'references', 'attached to', p?.namespace))
+          ref(r, p?.kind ?? 'Gateway', p?.name, ['spec', 'parentRefs', i], 'references', 'attached to', p?.namespace, p?.group ?? 'gateway.networking.k8s.io'))
         ;(o?.spec?.rules ?? []).forEach((rule: any, i: number) =>
           (rule?.backendRefs ?? []).forEach((b: any, j: number) => {
-            if ((b?.kind ?? 'Service') === 'Service') ref(r, 'Service', b?.name, ['spec', 'rules', i, 'backendRefs', j], 'routes', 'routes', b?.namespace)
+            if ((b?.kind ?? 'Service') === 'Service') ref(r, 'Service', b?.name, ['spec', 'rules', i, 'backendRefs', j], 'routes', 'routes', b?.namespace, b?.group ?? '')
           }))
         break
       }
@@ -177,11 +193,11 @@ export function analyze(text: string): Analysis {
         ref(r, 'GatewayClass', o?.spec?.gatewayClassName, ['spec', 'gatewayClassName'], 'references', 'class')
         ;(o?.spec?.listeners ?? []).forEach((l: any, i: number) =>
           (l?.tls?.certificateRefs ?? []).forEach((c: any, j: number) =>
-            ref(r, c?.kind ?? 'Secret', c?.name, ['spec', 'listeners', i, 'tls', 'certificateRefs', j], 'references', 'tls', c?.namespace)))
+            ref(r, c?.kind ?? 'Secret', c?.name, ['spec', 'listeners', i, 'tls', 'certificateRefs', j], 'references', 'tls', c?.namespace, c?.group ?? '')))
         break
       case 'RoleBinding': case 'ClusterRoleBinding': {
         const rr = o?.roleRef
-        if (rr?.kind && rr?.name) ref(r, rr.kind, rr.name, ['roleRef'], 'references', 'grants')
+        if (rr?.kind && rr?.name) ref(r, rr.kind, rr.name, ['roleRef'], 'references', 'grants', undefined, rr.apiGroup ?? 'rbac.authorization.k8s.io')
         ;(o?.subjects ?? []).forEach((s: any, i: number) => {
           if (s?.kind === 'ServiceAccount' && s?.name) ref(r, 'ServiceAccount', s.name, ['subjects', i], 'references', 'subject', s.namespace ?? r.namespace)
         })
@@ -189,7 +205,7 @@ export function analyze(text: string): Analysis {
       }
       case 'Certificate':
         ref(r, 'Secret', o?.spec?.secretName, ['spec', 'secretName'], 'references', 'writes')
-        if (o?.spec?.issuerRef?.name) ref(r, o.spec.issuerRef.kind ?? 'Issuer', o.spec.issuerRef.name, ['spec', 'issuerRef'], 'references', 'issuer')
+        if (o?.spec?.issuerRef?.name) ref(r, o.spec.issuerRef.kind ?? 'Issuer', o.spec.issuerRef.name, ['spec', 'issuerRef'], 'references', 'issuer', undefined, o.spec.issuerRef.group ?? 'cert-manager.io')
         break
       case 'ServiceAccount':
         ;(o?.imagePullSecrets ?? []).forEach((s: any, i: number) => ref(r, 'Secret', s?.name, ['imagePullSecrets', i], 'references', 'imagePullSecret'))
@@ -198,8 +214,9 @@ export function analyze(text: string): Analysis {
   }
 
   // --- selector-based relations (inference from labels, not live pod evidence)
-  const withPodLabels = real.map((r) => ({ r, l: podLabelsOf(r) })).filter((x): x is { r: Resource; l: Record<string, string> } => x.l !== null)
+  const withPodLabels = real.filter(r => knownGroup(r.kind) === r.group).map((r) => ({ r, l: podLabelsOf(r) })).filter((x): x is { r: Resource; l: Record<string, string> } => x.l !== null)
   for (const s of real) {
+    if (knownGroup(s.kind) !== s.group) continue
     if (s.kind === 'Service' && s.obj?.spec?.selector && Object.keys(s.obj.spec.selector).length) {
       let hits = 0
       for (const { r, l } of withPodLabels) {

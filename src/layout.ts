@@ -8,7 +8,7 @@ const elk = new ELK()
 export interface Placed { id: string; x: number; y: number; w: number; h: number; parent?: string }
 export interface LayoutResult { nodes: Placed[]; groups: Placed[]; routes: Record<string, {x: number; y: number}[]> }
 
-export const nsLabel = (ns: string) => (ns === '' ? 'cluster-scoped' : ns)
+export const nsLabel = (ns: string) => (ns === '' ? 'cluster-scoped' : ns === '?' ? 'scope unresolved' : ns)
 
 /**
  * Each namespace is laid out on its own (layered, left to right), then the namespace boxes are shelf-packed
